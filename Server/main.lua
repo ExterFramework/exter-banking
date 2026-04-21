@@ -1,301 +1,225 @@
-TwoNa = exports["2na_core"]:getSharedObject()
-
-TwoNa.RegisterServerCallback("exter-banking:Server:GetUserAccounts", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
-    local xPlayer = TwoNa.GetPlayer(source)
-
-    local accounts = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE identifier = @id", { ["@id"] = identifier })
-
-    for k,v in ipairs(accounts) do 
-        accounts[k].transactions = json.decode(v.transactions)
-    end
-
-    table.insert(accounts, {
-        identifier = identifier,
+local function personalAccount(source)
+    return {
+        identifier = ExterBanking.GetIdentifier(source),
         id = "si:" .. source,
         name = "Personal Account",
-        balance = xPlayer.getBank(),
+        balance = ExterBanking.GetBank(source),
         transactions = {}
-    })
+    }
+end
 
-    cb({playerName = xPlayer.name, accounts = accounts})
+local function sanitizeAmount(rawAmount)
+    local amount = ExterBanking.SafeNumber(rawAmount)
+    if not amount or amount <= 0 then
+        return nil
+    end
+
+    return amount
+end
+
+local function addTransaction(account, payload)
+    account.transactions = account.transactions or {}
+    table.insert(account.transactions, payload)
+end
+
+ExterBanking.RegisterServerCallback("exter-banking:Server:GetUserAccounts", function(source, _, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    if not identifier then
+        return cb(nil)
+    end
+
+    local accounts = ExterBanking.FetchAll("SELECT * FROM accounts WHERE identifier = ?", { identifier })
+
+    for i = 1, #accounts do
+        accounts[i].balance = ExterBanking.SafeNumber(accounts[i].balance) or 0
+        accounts[i].transactions = ExterBanking.ParseTransactions(accounts[i].transactions)
+    end
+
+    table.insert(accounts, personalAccount(source))
+
+    cb({
+        playerName = ExterBanking.GetPlayerName(source),
+        totalMoney = (ExterBanking.GetBank(source) + ExterBanking.GetCash(source)),
+        accounts = accounts
+    })
 end)
 
-TwoNa.RegisterServerCallback("exter-banking:Server:CreateAccount", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
+ExterBanking.RegisterServerCallback("exter-banking:Server:CreateAccount", function(source, data, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    local accountName = data and data.accountName and tostring(data.accountName):sub(1, 64)
 
-    if not data.accountName then 
+    if not identifier or not accountName or accountName:gsub("%s", "") == "" then
         return cb(nil)
     end
 
     local account = {
         identifier = identifier,
-        id = GenerateAccountId(),
-        name = data.accountName,
+        id = ExterBanking.GenerateAccountId(),
+        name = accountName,
         balance = 0,
         transactions = {}
     }
 
-    TwoNa.MySQL.Sync.Execute("INSERT INTO accounts (identifier, id, name, balance, transactions) VALUES (?, ?, ?, ?, ?)", {
-        account.identifier,
-        account.id,
-        account.name,
-        account.balance,
-        json.encode(account.transactions)
-    })
+    local inserted = ExterBanking.Execute(
+        "INSERT INTO accounts (identifier, id, name, balance, transactions) VALUES (?, ?, ?, ?, ?)",
+        { account.identifier, account.id, account.name, account.balance, json.encode(account.transactions) }
+    )
 
-    cb(account)
+    if inserted and inserted > 0 then
+        cb(account)
+    else
+        cb(nil)
+    end
 end)
 
-TwoNa.RegisterServerCallback("exter-banking:Server:DeleteAccount", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
+ExterBanking.RegisterServerCallback("exter-banking:Server:DeleteAccount", function(source, data, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    local accountId = data and tostring(data.accountId or "")
 
-    if string.find(data.accountId, "si:") then 
-        cb(false)
-        return
+    if accountId:find("si:", 1, true) == 1 then
+        return cb(false)
     end
 
-    local result = TwoNa.MySQL.Sync.Execute("DELETE FROM accounts WHERE identifier = ? and id = ?", { identifier, data.accountId })
-
-    if result.affectedRows >= 1 then 
-        cb(true)
-    else
-        cb(false)
-    end   
+    local affected = ExterBanking.Execute("DELETE FROM accounts WHERE identifier = ? and id = ?", { identifier, accountId })
+    cb(affected and affected > 0)
 end)
 
-TwoNa.RegisterServerCallback("exter-banking:Server:DepositMoney", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
-    local xPlayer = TwoNa.GetPlayer(source)
+ExterBanking.RegisterServerCallback("exter-banking:Server:DepositMoney", function(source, data, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    local amount = sanitizeAmount(data and data.amount)
+    local accountId = data and data.accountId
 
-    if not data.accountId or not xPlayer then 
+    if not identifier or not amount or not accountId then
         return cb(nil)
     end
 
-    if string.find(data.accountId, "si:") then 
-        if xPlayer.getMoney() >= tonumber(data.amount) then 
-            xPlayer.removeMoney(data.amount)
-            xPlayer.addBank(data.amount)
-    
-            cb({{
-                identifier = identifier,
-                id = "si:" .. source,
-                name = "Personal Account",
-                balance = xPlayer.getBank(),
-                transactions = {}
-            }})
-        else
-            cb(nil)
-        end
-    else
-        local accounts = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE identifier = ? and id = ?", { identifier, data.accountId })
-
-        if accounts[1] and tonumber(data.amount) <= xPlayer.getMoney() then 
-            xPlayer.removeMoney(data.amount)
-    
-            accounts[1].balance = accounts[1].balance + data.amount
-            accounts[1].transactions = json.decode(accounts[1].transactions)
-            table.insert(accounts[1].transactions, { type = "deposit", amount = data.amount, description = data.description or nil })
-    
-            TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE identifier = ? and id = ?", { accounts[1].balance, json.encode(accounts[1].transactions), identifier, data.accountId })
-    
-            accounts[1].playerName = xPlayer.name
-    
-            cb({accounts[1]})
-        else 
-            cb(nil)
-        end
-    end
-end)
-
-TwoNa.RegisterServerCallback("exter-banking:Server:WithdrawMoney", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
-    local xPlayer = TwoNa.GetPlayer(source)
-
-    if not data.accountId or not xPlayer then 
+    if not ExterBanking.RemoveCash(source, amount) then
         return cb(nil)
     end
 
-    if string.find(data.accountId, "si:") then
-        if xPlayer.getBank() >= tonumber(data.amount) then 
-            xPlayer.removeBank(data.amount)
-            xPlayer.addMoney(data.amount)
-    
-            cb({{
-                identifier = identifier,
-                id = "si:" .. source,
-                name = "Personal Account",
-                balance = xPlayer.getBank(),
-                transactions = {}
-            }})
-        else
-            cb(nil)
-        end 
-    else
-        local accounts = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE identifier = ? and id = ?", { identifier, data.accountId })
-
-        if accounts[1] then 
-            if accounts[1].balance >= tonumber(data.amount) then 
-                accounts[1].balance = accounts[1].balance - data.amount
-    
-                accounts[1].transactions = json.decode(accounts[1].transactions)
-                table.insert(accounts[1].transactions, { type = "withdraw", amount = data.amount, description = data.description or nil })
-    
-                TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE identifier = ? and id = ?", { accounts[1].balance, json.encode(accounts[1].transactions), identifier, data.accountId })
-        
-                xPlayer.addMoney(data.amount)
-    
-                accounts[1].playerName = xPlayer.name
-    
-                cb({accounts[1]})
-            else
-                cb(nil)
-            end
-        end
+    if tostring(accountId):find("si:", 1, true) == 1 then
+        ExterBanking.AddBank(source, amount)
+        return cb({ personalAccount(source) })
     end
+
+    local account = ExterBanking.GetAccountByOwner(identifier, accountId)
+    if not account then
+        ExterBanking.AddCash(source, amount)
+        return cb(nil)
+    end
+
+    account.balance = account.balance + amount
+    addTransaction(account, { type = "deposit", amount = amount, description = data.description or nil })
+    ExterBanking.SaveAccount(account)
+    account.playerName = ExterBanking.GetPlayerName(source)
+
+    cb({ account })
 end)
 
-TwoNa.RegisterServerCallback("exter-banking:Server:TransferMoney", function(source, data, cb) 
-    local identifier = TwoNa.GetCharacterIdentifier(source)
+ExterBanking.RegisterServerCallback("exter-banking:Server:WithdrawMoney", function(source, data, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    local amount = sanitizeAmount(data and data.amount)
+    local accountId = data and data.accountId
 
-    if string.find(data.accountId, "si:") then 
-        local xPlayer = TwoNa.GetPlayer(source)
+    if not identifier or not amount or not accountId then
+        return cb(nil)
+    end
 
-        if xPlayer.getBank() >= tonumber(data.amount) then
-            if string.find(data.targetId, 'si:') then 
-                local targetSource = tonumber(string.match(data.targetId, "%d+"))
+    if tostring(accountId):find("si:", 1, true) == 1 then
+        if not ExterBanking.RemoveBank(source, amount) then
+            return cb(nil)
+        end
 
-                if targetSource == source then
-                    cb(nil) 
-                else
-                    local targetXPlayer = TwoNa.GetPlayer(targetSource)
+        ExterBanking.AddCash(source, amount)
+        return cb({ personalAccount(source) })
+    end
 
-                    if targetXPlayer then 
-                        xPlayer.removeBank(data.amount)
-                        targetXPlayer.addBank(data.amount)
-    
-                        cb({{
-                            identifier = identifier,
-                            id = "si:" .. source,
-                            name = "Personal Account",
-                            balance = xPlayer.getBank(),
-                            transactions = {}
-                        }})
-                    else
-                        cb(nil)
-                    end
-                end
-            else
-                local targetAccountFetch = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE id = ?", { data.targetId })
+    local account = ExterBanking.GetAccountByOwner(identifier, accountId)
+    if not account or account.balance < amount then
+        return cb(nil)
+    end
 
-                if targetAccountFetch[1] then
-                    local targetAccount = targetAccountFetch[1]
-    
-                    targetAccount.balance = targetAccount.balance + data.amount
-    
-                    targetAccount.transactions = json.decode(targetAccount.transactions)
-                    table.insert(targetAccount.transactions, { type = "transfer_recieved", amount = data.amount, description = data.description, targetId = "si:" .. source })
-    
-                    xPlayer.removeBank(data.amount)
+    account.balance = account.balance - amount
+    addTransaction(account, { type = "withdraw", amount = amount, description = data.description or nil })
+    ExterBanking.SaveAccount(account)
 
-                    TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE id = ?", { targetAccount.balance, json.encode(targetAccount.transactions), targetAccount.id })
-    
-                    if targetAccount.identifier == identifier then 
-                        cb({ 
-                            {
-                                identifier = identifier,
-                                id = "si:" .. source,
-                                name = "Personal Account",
-                                balance = xPlayer.getBank(),
-                                transactions = {} 
-                            }, 
-                            targetAccount 
-                        })
-                    else
-                        cb({{ 
-                            identifier = identifier,
-                            id = "si:" .. source,
-                            name = "Personal Account",
-                            balance = xPlayer.getBank(),
-                            transactions = {} 
-                        }})
-                    end
-                else 
-                    cb(nil)
-                end
-            end
-        else
-            cb(nil)
+    ExterBanking.AddCash(source, amount)
+    account.playerName = ExterBanking.GetPlayerName(source)
+
+    cb({ account })
+end)
+
+ExterBanking.RegisterServerCallback("exter-banking:Server:TransferMoney", function(source, data, cb)
+    local identifier = ExterBanking.GetIdentifier(source)
+    local amount = sanitizeAmount(data and data.amount)
+    local accountId = data and tostring(data.accountId or "")
+    local targetId = data and tostring(data.targetId or "")
+
+    if not identifier or not amount or accountId == "" or targetId == "" then
+        return cb(nil)
+    end
+
+    if accountId == targetId then
+        return cb(nil)
+    end
+
+    local updates = {}
+    local personalSender = accountId:find("si:", 1, true) == 1
+
+    if personalSender then
+        if not ExterBanking.RemoveBank(source, amount) then
+            return cb(nil)
         end
     else
-        local accountFetch = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE identifier = ? and id = ?", { identifier, data.accountId })
+        local senderAccount = ExterBanking.GetAccountByOwner(identifier, accountId)
+        if not senderAccount or senderAccount.balance < amount then
+            return cb(nil)
+        end
 
-        if accountFetch[1] then 
-            local senderAccount = accountFetch[1]
-    
-            if senderAccount.balance >= tonumber(data.amount) then 
-    
-                if string.find(data.targetId, 'si:') then 
-                    local targetSource = tonumber(string.match(data.targetId, "%d+"))
-                    local targetXPlayer = TwoNa.GetPlayer(targetSource)
+        senderAccount.balance = senderAccount.balance - amount
+        addTransaction(senderAccount, { type = "transfer_sent", amount = amount, description = data.description or nil, targetId = targetId })
+        ExterBanking.SaveAccount(senderAccount)
+        table.insert(updates, senderAccount)
+    end
 
-                    if targetXPlayer then 
-                        senderAccount.balance = senderAccount.balance - data.amount
-                        senderAccount.transactions = json.decode(senderAccount.transactions)
-                        table.insert(senderAccount.transactions, { type = "transfer_sent", amount = data.amount, description = data.description, targetId = "si:" .. targetSource })
+    local targetPersonal = targetId:find("si:", 1, true) == 1
 
-                        TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE id = ?", { senderAccount.balance, json.encode(senderAccount.transactions), senderAccount.id })
+    if targetPersonal then
+        if not Config.AllowPersonalAccountTransfer then
+            if personalSender then ExterBanking.AddBank(source, amount) end
+            return cb(nil)
+        end
 
-                        targetXPlayer.addBank(data.amount)
+        local targetSource = ExterBanking.SafeNumber(targetId:match("%d+"))
+        if not targetSource or not GetPlayerName(targetSource) then
+            if personalSender then ExterBanking.AddBank(source, amount) end
+            return cb(nil)
+        end
 
-                        if targetSource == source then 
-                            cb({ 
-                                senderAccount,  
-                                { 
-                                    identifier = identifier,
-                                    id = "si:" .. source,
-                                    name = "Personal Account",
-                                    balance = targetXPlayer.getBank(),
-                                    transactions = {} 
-                                }
-                            })
-                        else
-                            cb({ senderAccount })
-                        end
-                    else
-                        cb(nil)
-                    end
-                else
-                    local targetAccountFetch = TwoNa.MySQL.Sync.Fetch("SELECT * FROM accounts WHERE id = ?", { data.targetId })
-    
-                    if targetAccountFetch[1] then
-                        local targetAccount =targetAccountFetch[1]
-        
-                        senderAccount.balance = senderAccount.balance - data.amount
-        
-                        senderAccount.transactions = json.decode(senderAccount.transactions)
-                        table.insert(senderAccount.transactions, { type = "transfer_sent", amount = data.amount, description = data.description, targetId = data.targetId })
-        
-                        targetAccount.balance = targetAccount.balance + data.amount
-        
-                        targetAccount.transactions = json.decode(targetAccount.transactions)
-                        table.insert(targetAccount.transactions, { type = "transfer_recieved", amount = data.amount, description = data.description, targetId = senderAccount.id })
-        
-                        TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE id = ?", { senderAccount.balance, json.encode(senderAccount.transactions), senderAccount.id })
-                        TwoNa.MySQL.Sync.Execute("UPDATE accounts SET balance = ?, transactions = ? WHERE id = ?", { targetAccount.balance, json.encode(targetAccount.transactions), targetAccount.id })
-        
-                        if targetAccount.identifier == senderAccount.identifier then 
-                            cb({ senderAccount, targetAccount })
-                        else
-                            cb({ senderAccount })
-                        end
-                    else 
-                        cb(nil)
-                    end
-                end
-            else 
-                cb(nil)
-            end
+        ExterBanking.AddBank(targetSource, amount)
+
+        if targetSource == source then
+            table.insert(updates, personalAccount(source))
+        end
+    else
+        local targetAccount = ExterBanking.GetAccountById(targetId)
+        if not targetAccount then
+            if personalSender then ExterBanking.AddBank(source, amount) end
+            return cb(nil)
+        end
+
+        targetAccount.balance = targetAccount.balance + amount
+        addTransaction(targetAccount, { type = "transfer_recieved", amount = amount, description = data.description or nil, targetId = accountId })
+        ExterBanking.SaveAccount(targetAccount)
+
+        if targetAccount.identifier == identifier then
+            table.insert(updates, targetAccount)
         end
     end
+
+    if personalSender then
+        table.insert(updates, 1, personalAccount(source))
+    end
+
+    cb(#updates > 0 and updates or { personalAccount(source) })
 end)

@@ -4,7 +4,7 @@ game 'gta5'
 
 description 'Sobing4413'
 
-version '1.0.0'
+version '1.1.0'
 
 ui_page 'UI/index.html'
 
@@ -17,8 +17,6 @@ files {
     'UI/images/*.svg',
 	'UI/fonts/*.ttf'
 }
-
-dependency '2na_core'
 
 shared_script 'Config.lua'
 client_script 'Client/*.lua'
