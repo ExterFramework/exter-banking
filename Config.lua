@@ -1,15 +1,21 @@
 Config = {}
 
+-- Supported frameworks: auto, qbcore, esx, qbox, standalone
+Config.Framework = "auto"
+
 Config.TargetScript = "qb-target" -- ox_target, qb-target, exter-target
 
 Config.ShowBlips = true
+
+-- If true, players can use personal IDs (si:<serverId>) as transfer target.
+Config.AllowPersonalAccountTransfer = true
 
 Config.ATMProps = {
 
 }
 
 Config.BankLocations = {
-	{ 
+	{
 		coords = vec3(149.02, -1041.17, 29.37),
 		heading = 340.0,
 		length = 0.8,
@@ -17,7 +23,7 @@ Config.BankLocations = {
 		minZ = 28.37,
 		maxZ = 31.07
 	},
-	{ 
+	{
 		coords = vec3(-1212.92, -331.6, 37.79),
 		heading = 27.0,
 		length = 0.8,
@@ -33,7 +39,7 @@ Config.BankLocations = {
 		minZ = 48.04,
 		maxZ = 50.74
 	},
-	{ 
+	{
 		coords = vec3(313.37, -279.53, 54.17),
 		heading = 340.0,
 		length = 0.8,
@@ -49,7 +55,7 @@ Config.BankLocations = {
 		minZ = 14.7,
 		maxZ = 17.4
 	},
-	{ 
+	{
 		coords = vec3(1175.7, 2707.51, 38.09),
 		heading = 0.0,
 		length = 0.8,
@@ -57,7 +63,7 @@ Config.BankLocations = {
 		minZ = 37.09,
 		maxZ = 39.79
 	},
-	{ 
+	{
 		coords = vec3(-111.54, 6469.59, 31.62),
 		heading = 315.0,
 		length = 0.8,
@@ -66,4 +72,3 @@ Config.BankLocations = {
 		maxZ = 33.12
 	}
 }
-
